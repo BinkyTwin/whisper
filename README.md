@@ -26,7 +26,7 @@ L'app utilise l'API OpenAI Whisper pour la transcription. C'est rapide, précis,
 
 1. **Clone le repo**
    ```bash
-   git clone https://github.com/ton-username/whisper.git
+   git clone https://github.com/Paseru/whisper.git
    cd whisper
    ```
 
