@@ -71,14 +71,20 @@ final class AppState: ObservableObject {
         case .cloud:
             return hasAPIKey
         case .local:
-            return modelDownloadState.isReady || modelDownloadState == .notDownloaded
+            return modelDownloadState.isReady
         }
     }
 
     private func startRecording() {
-        // Only require API key for cloud mode
+        // Vérifier les prérequis selon le mode
         if transcriptionMode == .cloud && !hasAPIKey {
             lastError = "Configure ta clé API dans les préférences"
+            SoundService.shared.playErrorSound()
+            return
+        }
+
+        if transcriptionMode == .local && !modelDownloadState.isReady {
+            lastError = "Télécharge d'abord un modèle local dans les préférences"
             SoundService.shared.playErrorSound()
             return
         }

@@ -6,12 +6,14 @@ import Combine
 @MainActor
 final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider {
     static let shared = LocalTranscriptionProvider()
-    
+
     @Published private(set) var downloadStates: [LocalWhisperModel: ModelDownloadState] = [:]
     @Published private(set) var isInitializing = false
-    
+
     private var whisperKit: WhisperKit?
-    private var progressCancellables: Set<AnyCancellable> = []
+    private var currentLoadedModel: LocalWhisperModel?
+    private var progressCancellables: [LocalWhisperModel: AnyCancellable] = [:]
+    private var modelsBeingDownloaded: Set<LocalWhisperModel> = []
     private let hubApi = HubApi()
     private let repo = Hub.Repo(id: "argmaxinc/whisperkit-coreml", type: .models)
     
@@ -45,21 +47,56 @@ final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider 
     }
     
     func initializeIfNeeded() async throws {
-        guard whisperKit == nil else { return }
-        
         let selectedModel = Constants.selectedLocalModel
-        try await initializeIfNeeded(for: selectedModel)
+
+        // Si WhisperKit est chargé avec un autre modèle, on le réinitialise
+        if whisperKit != nil && currentLoadedModel != selectedModel {
+            whisperKit = nil
+            currentLoadedModel = nil
+        }
+
+        // Si déjà initialisé avec le bon modèle, on ne fait rien
+        guard whisperKit == nil else { return }
+
+        try await loadModel(selectedModel)
     }
-    
+
     func initializeIfNeeded(for model: LocalWhisperModel) async throws {
-        guard downloadStates[model] != .downloaded else { return }
-        
+        // Si le modèle est déjà téléchargé ET WhisperKit est chargé avec ce modèle, rien à faire
+        if downloadStates[model] == .downloaded && whisperKit != nil && currentLoadedModel == model {
+            return
+        }
+
+        // Si WhisperKit est chargé avec un autre modèle, on le réinitialise
+        if whisperKit != nil && currentLoadedModel != model {
+            whisperKit = nil
+            currentLoadedModel = nil
+        }
+
+        try await loadModel(model)
+    }
+
+    private func loadModel(_ model: LocalWhisperModel) async throws {
+        // Protection contre les téléchargements concurrents
+        guard !modelsBeingDownloaded.contains(model) else {
+            throw LocalTranscriptionError.downloadInProgress
+        }
+
+        modelsBeingDownloaded.insert(model)
         isInitializing = true
-        defer { isInitializing = false }
-        
+
+        defer {
+            modelsBeingDownloaded.remove(model)
+            isInitializing = false
+        }
+
         downloadStates[model] = .downloading(progress: 0, bytesDownloaded: 0, bytesTotal: 0)
-        
+
         do {
+            // Créer un Progress pour suivre le téléchargement
+            let progress = Progress(totalUnitCount: model.fileSizeBytes)
+            observeProgress(for: model, progress: progress)
+
             let kit = try await WhisperKit(
                 WhisperKitConfig(
                     model: model.fileName,
@@ -70,32 +107,35 @@ final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider 
                     download: true
                 )
             )
-            
-            observeProgress(for: model, kit: kit)
-            
+
             whisperKit = kit
+            currentLoadedModel = model
             downloadStates[model] = .downloaded
+
+            // Nettoyer l'observateur de progression
+            progressCancellables[model] = nil
         } catch {
             downloadStates[model] = .error(error.localizedDescription)
+            progressCancellables[model] = nil
             throw LocalTranscriptionError.initializationFailed(error.localizedDescription)
         }
     }
     
-    private func observeProgress(for model: LocalWhisperModel, kit: WhisperKit) {
-        let cancellable = kit.progress.publisher(for: \.fractionCompleted)
+    private func observeProgress(for model: LocalWhisperModel, progress: Progress) {
+        let cancellable = progress.publisher(for: \.fractionCompleted)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] progress in
+            .sink { [weak self] fractionCompleted in
                 guard let self = self else { return }
                 let totalBytes = model.fileSizeBytes
-                let downloadedBytes = Int64(Double(totalBytes) * progress)
-                
+                let downloadedBytes = Int64(Double(totalBytes) * fractionCompleted)
+
                 downloadStates[model] = .downloading(
-                    progress: progress,
+                    progress: fractionCompleted,
                     bytesDownloaded: downloadedBytes,
                     bytesTotal: totalBytes
                 )
             }
-        progressCancellables.insert(cancellable)
+        progressCancellables[model] = cancellable
     }
     
     func transcribe(audioURL: URL) async throws -> String {
@@ -137,22 +177,21 @@ final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider 
     }
     
     func deleteModel(for model: LocalWhisperModel) throws {
-        if Constants.selectedLocalModel == model, whisperKit != nil {
+        // Nettoyer WhisperKit si c'est le modèle actuellement chargé
+        if currentLoadedModel == model {
             whisperKit = nil
+            currentLoadedModel = nil
         }
-        
-        progressCancellables.removeAll()
-        
+
+        // Supprimer uniquement le cancellable de ce modèle
+        progressCancellables[model] = nil
+
         let modelPath = getStoragePath(for: model.fileName)
         let fileManager = FileManager.default
-        
+
         if fileManager.fileExists(atPath: modelPath.path) {
             try fileManager.removeItem(at: modelPath)
             downloadStates[model] = .notDownloaded
-            
-            if Constants.selectedLocalModel == model {
-                whisperKit = nil
-            }
         } else {
             throw LocalTranscriptionError.modelNotFound(model.displayName)
         }
@@ -184,7 +223,8 @@ final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider 
         case emptyResult
         case modelNotFound(String)
         case deletionFailed(String)
-        
+        case downloadInProgress
+
         var errorDescription: String? {
             switch self {
             case .notInitialized:
@@ -199,6 +239,8 @@ final class LocalTranscriptionProvider: ObservableObject, TranscriptionProvider 
                 return "Modèle '\(name)' introuvable"
             case .deletionFailed(let message):
                 return "Échec de la suppression: \(message)"
+            case .downloadInProgress:
+                return "Un téléchargement est déjà en cours pour ce modèle"
             }
         }
     }

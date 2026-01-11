@@ -225,32 +225,6 @@ struct SettingsView: View {
         }
     }
 
-    private var modelStatusIndicator: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(modelStatusColor)
-                .frame(width: 6, height: 6)
-                .shadow(color: modelStatusColor.opacity(0.4), radius: 3)
-
-            Text(appState.modelDownloadState.statusText)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-        }
-    }
-
-    private var modelStatusColor: Color {
-        switch appState.modelDownloadState {
-        case .downloaded:
-            return .green
-        case .downloading:
-            return .blue
-        case .notDownloaded:
-            return .orange
-        case .error:
-            return .red
-        }
-    }
-
     private var headerSection: some View {
         VStack(spacing: 0) {
             HStack(spacing: 16) {

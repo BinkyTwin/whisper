@@ -20,7 +20,7 @@ enum LocalWhisperModel: String, CaseIterable, Codable, Identifiable {
     var fileName: String {
         switch self {
         case .base: return "openai_whisper-base"
-        case .small: return "openai_whisper-tiny"
+        case .small: return "openai_whisper-small"
         case .largeV3Turbo: return "openai_whisper-large-v3_turbo"
         case .largeV3: return "openai_whisper-large-v3"
         }
